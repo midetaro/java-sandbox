@@ -7,7 +7,7 @@ import java.time.LocalDateTime;
  */
 public record Operation(){
 
-    public void main(){
+    void main(){
         OrderStatus status = new Pending(LocalDateTime.now());
 
         status = pay(status);
