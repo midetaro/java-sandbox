@@ -1,6 +1,10 @@
 *.xml
 *.iml
 .idea/
+.gradle/
+gradle/
+.bat
+.jar/
 # 一度commitしたファイルをgit管理から外す方法
 # git rm --cached {ファイル名}
 # または
