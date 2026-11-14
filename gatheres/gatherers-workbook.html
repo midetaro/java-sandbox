@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Stream Gatherers 問題集 — 中間操作を、自分で作る</title>
+  <link rel="stylesheet" href="workbook.css">
+</head>
+<body>
+<header>
+  <div class="eyebrow">JAVA 25 PRACTICE / 10 QUESTIONS</div>
+  <h1>Gatherersで、中間操作を自作する。</h1>
+  <p>Stream APIの<code>map</code>・<code>filter</code>・<code>collect</code>とラムダ式を使える方向け。組み込みGathererの使い方から、状態・打ち切り・finisher・並列対応を持つ自作Gatherer、合成の実習まで10問で練習します。まず出力を予想し、各問題の回答を開いて確かめましょう。</p>
+</header>
+<main>
+  <aside class="intro" aria-label="この問題集の前提">
+    <strong>前提とコードの読み方</strong>
+    <p>Java 25（LTS）を前提とします。Stream Gatherersは JDK 22・23 でプレビュー、JDK 24 で正式機能になりました（JEP 485）。<code>java.util.stream.Gatherer</code>がインターフェース、<code>java.util.stream.Gatherers</code>が組み込み実装を返すユーティリティクラスです。</p>
+    <p>コード中の<code>// =&gt; [1, 2]</code>は、その行を出力したときの結果を表します。回答例では Java 25 で正式化されたインスタンス<code>main</code>メソッドと、使わない引数を表す<code>_</code>を使います。各問題は独立です。</p>
+    <p><strong>最初の手がかり：</strong><code>stream.gather(g)</code>は中間操作です。Gathererは要素を1つずつ受け取り、0個・1個・複数個の要素を下流へ<code>push</code>できます。</p>
+  </aside>
+  <nav aria-label="目次">
+    <a href="#q1">01 構成要素</a><a href="#q2">02 窓分割</a>
+    <a href="#q3">03 fold と scan</a><a href="#q4">04 map の自作</a>
+    <a href="#q5">05 途中で打ち切る</a><a href="#q6">06 状態を持つ</a>
+    <a href="#q7">07 finisher</a><a href="#q8">08 mapConcurrent</a>
+    <a href="#q9">09 並列と combiner</a><a href="#q10">10 総合実習</a>
+  </nav>
+
+  <details class="intro glossary">
+    <summary>用語集：この問題集で使う語</summary>
+    <ul>
+      <li><strong>中間操作 / 終端操作</strong>：<code>map</code>や<code>gather</code>のように新しいStreamを返す操作が中間操作、<code>toList</code>や<code>collect</code>のように結果を確定させる操作が終端操作です。</li>
+      <li><strong>downstream（下流）</strong>：Gathererの次に続く段階。<code>downstream.push(e)</code>で要素を渡します。戻り値は「下流がまだ要素を受け付けるか」です。</li>
+      <li><strong>短絡（short-circuit）</strong>：入力をすべて読まずに処理を打ち切ること。<code>limit</code>や<code>takeWhile</code>が代表例です。</li>
+      <li><strong>greedy（貪欲）</strong>：自分からは処理を打ち切らず、入力をすべて受け取る性質。<code>Integrator.ofGreedy</code>でこの性質を宣言できます。</li>
+      <li><strong>sequential（逐次）</strong>：要素を1つずつ順番に処理すること。<code>Gatherer.ofSequential</code>で作ったGathererは並列に評価されません。</li>
+      <li><strong>LTS = Long-Term Support（長期サポート）</strong>：長期間更新が提供されるリリース。Java 25 は LTS です。</li>
+      <li><strong>JEP = JDK Enhancement Proposal（JDK拡張提案）</strong>：JDKの機能追加を記述した文書。JEP 485 が Stream Gatherers の正式化です。</li>
+    </ul>
+    <p class="meta">参照：<a href="https://openjdk.org/jeps/485">JEP 485: Stream Gatherers</a> · <a href="https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/stream/Gatherer.html">Java SE 25 API — Gatherer</a></p>
+  </details>
+
+  <section aria-labelledby="basics">
+    <h2 id="basics">01 / 基本と組み込みGatherer</h2>
+    <article class="question" id="q1">
+      <div class="meta">問題 01 · 4つの構成要素・Collectorとの違い</div>
+      <h3>Gathererは、何を組み合わせてできている？</h3>
+      <p>Gathererは次の4つの関数で構成されます。それぞれ「いつ呼ばれ、何をするか」を答えてください。</p>
+      <pre>initializer   Supplier&lt;A&gt;
+integrator    Gatherer.Integrator&lt;A, T, R&gt;
+combiner      BinaryOperator&lt;A&gt;
+finisher      BiConsumer&lt;A, Gatherer.Downstream&lt;? super R&gt;&gt;</pre>
+      <p>あわせて、<code>Gatherer&lt;T, A, R&gt;</code>の型引数T・A・Rの意味と、<code>Collector</code>（<code>collect</code>に渡すもの）との違いを1文で説明してください。</p>
+      <details><summary>回答・解説を開く</summary><div class="answer">
+        <ul>
+          <li><strong>initializer</strong>：処理の開始時に1回呼ばれ、状態オブジェクトを作ります。状態が不要なら省略します。</li>
+          <li><strong>integrator</strong>：入力要素ごとに呼ばれ、状態を更新し、必要に応じて下流へ<code>push</code>します。<code>false</code>を返すと処理を打ち切ります。</li>
+          <li><strong>combiner</strong>：並列実行時に、分割して処理した2つの状態をまとめます。</li>
+          <li><strong>finisher</strong>：入力がすべて尽きた後に1回呼ばれ、状態に残った要素を下流へ<code>push</code>できます。</li>
+        </ul>
+        <p>Tは入力要素の型、Aは状態（state）の型、Rは下流へ流す出力要素の型です。</p>
+        <p><code>Collector</code>は終端操作として1つの結果を返しますが、Gathererは中間操作として任意個の要素をStreamに流し、後ろにさらに<code>map</code>などを続けられます。</p>
+        <p>省略した要素には<code>Gatherer.defaultInitializer()</code>などの既定値が使われます。4つすべてを毎回書く必要はありません。</p>
+      </div></details>
+    </article>
+    <article class="question" id="q2">
+      <div class="meta">問題 02 · windowFixed / windowSliding</div>
+      <h3>窓に分けた結果を予想する</h3>
+      <pre>Stream.of(1, 2, 3, 4, 5, 6, 7)
+    .gather(Gatherers.windowFixed(3))
+    .toList();          // =&gt; ?①
+
+Stream.of(1, 2, 3, 4, 5)
+    .gather(Gatherers.windowSliding(3))
+    .toList();          // =&gt; ?②
+
+Stream.of(1, 2)
+    .gather(Gatherers.windowSliding(3))
+    .toList();          // =&gt; ?③</pre>
+      <p>①〜③の出力を答えてください。さらに、日ごとの気温<code>List&lt;Integer&gt; temps = List.of(20, 21, 22, 23, 24)</code>から「3日間の移動平均」の<code>List&lt;Double&gt;</code>を作るコードを書いてください。</p>
+      <details><summary>回答・解説を開く</summary><div class="answer">
+        <pre>① [[1, 2, 3], [4, 5, 6], [7]]
+② [[1, 2, 3], [2, 3, 4], [3, 4, 5]]
+③ [[1, 2]]</pre>
+        <p><code>windowFixed(n)</code>は重ならないn個ずつの窓を作り、端数は最後の短い窓になります。<code>windowSliding(n)</code>は1要素ずつずらした窓を作ります。どちらも窓を<code>List</code>として流します。</p>
+        <p>③のように入力が窓の大きさに満たない場合、<code>windowSliding</code>は全要素を含む窓を1つだけ流します。空のStreamでは何も流しません。</p>
+        <pre>List&lt;Double&gt; avg = temps.stream()
+    .gather(Gatherers.windowSliding(3))
+    .map(w -&gt; w.stream().mapToInt(Integer::intValue).average().orElseThrow())
+    .toList();          // =&gt; [21.0, 22.0, 23.0]</pre>
+        <p>窓の中身の集計は、<code>gather</code>の後に続く通常の<code>map</code>で行えます。</p>
+      </div></details>
+    </article>
+    <article class="question" id="q3">
+      <div class="meta">問題 03 · fold / scan</div>
+      <h3>最終結果だけか、途中経過も全部か</h3>
+      <p>初期残高1000の口座に、入出金<code>List.of(500, -300, 100, -700)</code>が順に発生しました。</p>
+      <ol>
+        <li>各取引後の残高推移<code>[1500, 1200, 1300, 600]</code>を得るコードを書いてください。</li>
+        <li>最終残高だけを得るコードを書き、その戻り値がどんなStreamになるか答えてください。</li>
+        <li>2のコードに空のリストを渡すと、結果はどうなりますか？</li>
+      </ol>
+      <details><summary>回答・解説を開く</summary><div class="answer">
+        <pre>// 1. 途中経過をすべて流す
+transactions.stream()
+    .gather(Gatherers.scan(() -&gt; 1000, Integer::sum))
+    .toList();          // =&gt; [1500, 1200, 1300, 600]
+
+// 2. 最終結果だけを流す
+transactions.stream()
+    .gather(Gatherers.fold(() -&gt; 1000, Integer::sum))
+    .toList();          // =&gt; [600]</pre>
+        <p><code>scan</code>は1要素ごとに更新した値を流し、<code>fold</code>は入力が尽きたときに最終値を1つだけ流します。<code>fold</code>の結果も中間操作の出力なので、要素1つのStreamです。値を取り出すには<code>findFirst()</code>などの終端操作を続けます。</p>
+        <p>3の答えは<code>[1000]</code>です。<code>fold</code>は入力が空でも初期値を1つ流します。一方、<code>scan</code>は入力が空なら何も流しません。</p>
+        <p><code>reduce</code>と異なり、<code>fold</code>は結合法則を満たす関数や並列用のマージ関数を必要としない、順序どおりの集約です。</p>
+      </div></details>
+    </article>
+  </section>
+
+  <section aria-labelledby="custom">
+    <h2 id="custom">02 / Gathererを自作する</h2>
+    <article class="question" id="q4">
+      <div class="meta">問題 04 · Gatherer.of・Integrator.ofGreedy</div>
+      <h3>mapをGathererで作り直す</h3>
+      <p>次のシグネチャで、<code>Stream.map</code>と同じ働きをするGathererを実装してください。状態は不要です。</p>
+      <pre>static &lt;T, R&gt; Gatherer&lt;T, ?, R&gt; map(Function&lt;? super T, ? extends R&gt; mapper)
+
+Stream.of(1, 2, 3).gather(map(x -&gt; x * 2)).toList();   // =&gt; [2, 4, 6]</pre>
+      <p>integratorが返す<code>boolean</code>には何を返すべきですか？ 常に<code>true</code>を返す実装との違いも説明してください。</p>
+      <details><summary>回答・解説を開く</summary><div class="answer">
+        <pre>static &lt;T, R&gt; Gatherer&lt;T, ?, R&gt; map(Function&lt;? super T, ? extends R&gt; mapper) {
+    return Gatherer.of(Gatherer.Integrator.ofGreedy(
+            (_, element, downstream) -&gt; downstream.push(mapper.apply(element))));
+}</pre>
+        <p>状態を使わないので<code>Gatherer.of(integrator)</code>だけで作れます。integratorの第1引数（状態）は使わないため<code>_</code>にします。</p>
+        <p><code>downstream.push</code>の戻り値をそのまま返します。後ろに<code>limit(1)</code>などがあると下流は要素を受け付けなくなり、<code>push</code>は<code>false</code>を返します。それを上流へ伝えることで、無駄な処理を止められます。常に<code>true</code>を返すと、下流が不要になった後も入力を読み続けます。</p>
+        <p>このGathererは自分からは打ち切らないので、<code>Integrator.ofGreedy</code>で包んで「貪欲である」とStreamに伝えます。結果は変わりませんが、実行時の最適化に使われます。</p>
+      </div></details>
+    </article>
+    <article class="question" id="q5">
+      <div class="meta">問題 05 · 短絡・無限ストリーム</div>
+      <h3>条件を外れた要素まで含めて止める</h3>
+      <p><code>takeWhile</code>は条件を満たさない最初の要素を含めません。その要素も含めて止まる<code>takeWhileInclusive</code>を実装してください。</p>
+      <pre>static &lt;T&gt; Gatherer&lt;T, ?, T&gt; takeWhileInclusive(Predicate&lt;? super T&gt; predicate)
+
+Stream.of(3, 5, 4, 2, 1).gather(takeWhileInclusive(x -&gt; x != 4)).toList();
+    // =&gt; [3, 5, 4]
+Stream.iterate(1, i -&gt; i + 1).gather(takeWhileInclusive(x -&gt; x &lt; 5)).toList();
+    // =&gt; [1, 2, 3, 4, 5]（無限ストリームでも止まる）</pre>
+      <p>このintegratorを<code>Integrator.ofGreedy</code>で包んでよいかも答えてください。</p>
+      <details><summary>回答・解説を開く</summary><div class="answer">
+        <pre>static &lt;T&gt; Gatherer&lt;T, ?, T&gt; takeWhileInclusive(Predicate&lt;? super T&gt; predicate) {
+    return Gatherer.of((_, element, downstream) -&gt;
+            downstream.push(element) &amp;&amp; predicate.test(element));
+}</pre>
+        <p>先に要素を<code>push</code>してから条件を判定し、条件を外れたら<code>false</code>を返します。integratorが<code>false</code>を返すと上流からの入力が止まるため、<code>Stream.iterate</code>の無限ストリームでも終了します。</p>
+        <p><code>&amp;&amp;</code>の左側を<code>push</code>にしているので、下流が受け付けなくなった場合も<code>false</code>を返して止まります。</p>
+        <p><code>ofGreedy</code>で包んではいけません。このGathererは自分から打ち切るため、greedyではありません。<code>Gatherer.of</code>に渡すラムダは、通常の<code>Integrator</code>として扱われます。</p>
+      </div></details>
+    </article>
+    <article class="question" id="q6">
+      <div class="meta">問題 06 · ofSequential・状態</div>
+      <h3>キーで重複を判定して、最初の要素だけ残す</h3>
+      <p><code>distinct</code>は要素そのものの<code>equals</code>で重複を判定します。キー抽出関数で判定する<code>distinctBy</code>を実装してください。</p>
+      <pre>static &lt;T, K&gt; Gatherer&lt;T, ?, T&gt; distinctBy(Function&lt;? super T, ? extends K&gt; keyExtractor)
+
+Stream.of("apple", "avocado", "banana", "blueberry", "cherry")
+    .gather(distinctBy(s -&gt; s.charAt(0)))
+    .toList();          // =&gt; [apple, banana, cherry]</pre>
+      <p>状態にはどんな型を使い、どのファクトリメソッドで作りますか？ 状態をrecordにしてはいけない理由も答えてください。</p>
+      <details><summary>回答・解説を開く</summary><div class="answer">
+        <pre>static &lt;T, K&gt; Gatherer&lt;T, ?, T&gt; distinctBy(Function&lt;? super T, ? extends K&gt; keyExtractor) {
+    return Gatherer.ofSequential(
+            HashSet&lt;K&gt;::new,
+            Gatherer.Integrator.ofGreedy((seen, element, downstream) -&gt; {
+                if (seen.add(keyExtractor.apply(element))) {
+                    return downstream.push(element);
+                }
+                return true;
+            }));
+}</pre>
+        <p>出現済みのキーを<code>HashSet</code>で記録します。<code>Set.add</code>は初めて追加したときだけ<code>true</code>を返すので、その要素だけを流します。重複した要素は流さず、処理は続けるため<code>true</code>を返します。</p>
+        <p>「最初に現れた要素」は入力順に依存するため、<code>ofSequential(initializer, integrator)</code>で逐次処理のGathererにします。initializerは評価ごとに呼ばれるので、同じGathererを複数のStreamで使っても状態は共有されません。</p>
+        <p>integratorは状態の参照を受け取り、中身を書き換えます。recordのフィールドは再代入できないため、状態は<code>HashSet</code>や可変のクラスにします。</p>
+      </div></details>
+    </article>
+    <article class="question" id="q7">
+      <div class="meta">問題 07 · finisher・最後の要素の取りこぼし</div>
+      <h3>最後のまとまりが消えるバグを直す</h3>
+      <p>連続する同じ文字列を「文字列＋連続数」にまとめる（ランレングス圧縮）Gathererを書いたところ、最後のまとまりが出力されませんでした。原因と修正方法を答えてください。</p>
+      <pre>class RunState { String value; int count; }
+
+Gatherer&lt;String, RunState, String&gt; runLength = Gatherer.ofSequential(
+        RunState::new,
+        (state, element, downstream) -&gt; {
+            if (state.count &gt; 0 &amp;&amp; state.value.equals(element)) {
+                state.count++;
+                return true;
+            }
+            boolean accepted = state.count == 0
+                    || downstream.push(state.value + state.count);
+            state.value = element;
+            state.count = 1;
+            return accepted;
+        });
+
+Stream.of("a", "a", "a", "b", "c", "c").gather(runLength).toList();
+    // 期待：[a3, b1, c2]　実際：[a3, b1]</pre>
+      <details><summary>回答・解説を開く</summary><div class="answer">
+        <p>integratorは「値が変わったとき」に前のまとまりを流します。最後の<code>c2</code>の後には次の要素が来ないため、integratorでは流すきっかけがありません。入力が尽きた後に呼ばれるfinisherで、状態に残ったまとまりを流します。</p>
+        <pre>Gatherer&lt;String, RunState, String&gt; runLength = Gatherer.ofSequential(
+        RunState::new,
+        (state, element, downstream) -&gt; { /* 問題文と同じ */ },
+        (state, downstream) -&gt; {
+            if (state.count &gt; 0) {
+                downstream.push(state.value + state.count);
+            }
+        });
+    // =&gt; [a3, b1, c2]</pre>
+        <p><code>state.count &gt; 0</code>の確認により、空のStreamでは何も流しません。この確認がないと<code>null0</code>のような値を流してしまいます。</p>
+        <p>窓分割や<code>fold</code>のように「ためてから流す」Gathererには、finisherが必要になることが多いです。<code>windowFixed</code>が端数の窓を最後に流せるのも同じ仕組みです。</p>
+      </div></details>
+    </article>
+  </section>
+
+  <section aria-labelledby="advanced">
+    <h2 id="advanced">03 / 並行・並列と総合実習</h2>
+    <article class="question" id="q8">
+      <div class="meta">問題 08 · mapConcurrent</div>
+      <h3>遅い呼び出しを、順序を保って並行に実行する</h3>
+      <pre>String fetchUser(int id) {
+    Thread.sleep(1000);   // 1件1秒かかるAPI呼び出しの代わり（例外処理は省略）
+    return "user-" + id;
+}
+
+List.of(1, 2, 3, 4, 5, 6).stream()
+    .gather(Gatherers.mapConcurrent(3, this::fetchUser))
+    .toList();</pre>
+      <p>出力の順序と、おおよその処理時間を答えてください。<code>fetchUser</code>はどんなスレッドで実行されますか？ <code>parallel().map(...)</code>と比べて、この処理に向いている理由も説明してください。</p>
+      <details><summary>回答・解説を開く</summary><div class="answer">
+        <pre>[user-1, user-2, user-3, user-4, user-5, user-6]
+// 約2秒（同時に3件ずつ、2回分）</pre>
+        <p><code>mapConcurrent(maxConcurrency, mapper)</code>は、mapperを仮想スレッドで実行し、同時実行数をmaxConcurrency以下に制限します。完了順にかかわらず、結果は入力の順序で流れます。逐次なら約6秒かかる処理です。</p>
+        <p><code>parallel()</code>は通常、共通ForkJoinPoolのプラットフォームスレッド（CPUコア数程度）で処理します。同時実行数を直接指定できず、待ち時間の長いブロッキング処理ではスレッドを占有します。<code>mapConcurrent</code>は逐次のStreamのまま、I/O待ちの多い処理だけを並行化できます。</p>
+        <p>同時実行数は、呼び出し先のAPIやデータベースが受け付けられる数に合わせて決めます。</p>
+      </div></details>
+    </article>
+    <article class="question" id="q9">
+      <div class="meta">問題 09 · combiner・並列実行</div>
+      <h3>parallel()でも正しい上位n件</h3>
+      <p>Integerの上位n件を降順で流す<code>topN</code>を、<code>parallel()</code>でも正しく動くように実装してください。</p>
+      <pre>IntStream.rangeClosed(1, 1000).boxed().gather(topN(3)).toList();
+    // =&gt; [1000, 999, 998]
+IntStream.rangeClosed(1, 1000).boxed().parallel().gather(topN(3)).toList();
+    // =&gt; [1000, 999, 998]</pre>
+      <p>どのファクトリメソッドを使い、combinerで何をしますか？ <code>ofSequential</code>で作ったGathererを<code>parallel()</code>のStreamで使うとどうなるかも答えてください。</p>
+      <details><summary>回答・解説を開く</summary><div class="answer">
+        <pre>static Gatherer&lt;Integer, ?, Integer&gt; topN(int n) {
+    return Gatherer.&lt;Integer, PriorityQueue&lt;Integer&gt;, Integer&gt;of(
+            PriorityQueue::new,
+            Gatherer.Integrator.ofGreedy((heap, element, _) -&gt; {
+                heap.offer(element);
+                if (heap.size() &gt; n) {
+                    heap.poll();          // 最小を捨てて n 件に保つ
+                }
+                return true;
+            }),
+            (left, right) -&gt; {
+                for (Integer e : right) {
+                    left.offer(e);
+                    if (left.size() &gt; n) {
+                        left.poll();
+                    }
+                }
+                return left;
+            },
+            (heap, downstream) -&gt; {
+                List&lt;Integer&gt; sorted = new ArrayList&lt;&gt;(heap);
+                sorted.sort(Comparator.reverseOrder());
+                for (Integer e : sorted) {
+                    if (!downstream.push(e)) {
+                        return;
+                    }
+                }
+            });
+}</pre>
+        <p>4つすべてを受け取る<code>Gatherer.of(initializer, integrator, combiner, finisher)</code>を使います。並列実行では入力が分割され、分割ごとにinitializerで状態が作られます。combinerは2つの部分結果をマージし、再びn件に絞ります。integratorでは要素を流さないので、下流の引数は<code>_</code>にします。</p>
+        <p>状態は最小ヒープの<code>PriorityQueue</code>です。先頭が最小なので、n件を超えたら<code>poll</code>で最小を捨てます。ヒープの反復順は整列されていないため、finisherで降順に並べてから流します。</p>
+        <p><code>ofSequential</code>で作ったGathererなどcombinerを持たないものは、<code>parallel()</code>のStreamでも<code>gather</code>の段階が逐次に評価されます。結果は正しいままですが、並列化の効果は得られません。</p>
+      </div></details>
+    </article>
+    <article class="question" id="q10">
+      <div class="meta">問題 10 · 総合実習 / 約10分</div>
+      <h3>andThenで合成し、1回のgatherで実行する</h3>
+      <p>Java 25 が使える環境で、新しい練習用ディレクトリに次の<code>Main.java</code>を作成してください。既存の同名ディレクトリがある場合は、別の名前を使ってください。</p>
+      <pre>mkdir gatherers-practice
+cd gatherers-practice</pre>
+      <pre>// Main.java
+import java.util.function.Function;
+import java.util.stream.Gatherer;
+import java.util.stream.Gatherers;
+import java.util.stream.Stream;
+
+&lt;T, R&gt; Gatherer&lt;T, ?, R&gt; map(Function&lt;? super T, ? extends R&gt; mapper) {
+    return Gatherer.of(Gatherer.Integrator.ofGreedy(
+            (_, element, downstream) -&gt; downstream.push(mapper.apply(element))));
+}
+
+Gatherer&lt;Integer, ?, Integer&gt; pipeline() {
+    // TODO
+    return null;
+}
+
+void main() {
+    System.out.println(Stream.of(1, 2, 3, 4, 5, 6, 7, 8, 9, 10).gather(pipeline()).toList());
+    System.out.println(Stream.of(1, 2, 3).gather(pipeline()).toList());
+}</pre>
+      <p>次の3点を試してください。</p>
+      <ol>
+        <li><code>pipeline()</code>を、「2個ずつの窓に分ける → 各窓の合計を取る → 累積和を出す」1つのGathererとして実装する。<code>gather</code>は1回だけ呼ぶ。</li>
+        <li><code>java Main.java</code>で実行し、1行目が<code>[3, 10, 21, 36, 55]</code>になることを確認する。</li>
+        <li>2行目の出力を実行前に予想し、結果と比べる。</li>
+      </ol>
+      <p>最後に「Gathererとは何か」を、自分の言葉で1文にまとめてください。</p>
+      <details><summary>回答・解説を開く</summary><div class="answer">
+        <pre>Gatherer&lt;Integer, ?, Integer&gt; pipeline() {
+    return Gatherers.&lt;Integer&gt;windowFixed(2)
+            .andThen(map(window -&gt; window.stream().mapToInt(Integer::intValue).sum()))
+            .andThen(Gatherers.scan(() -&gt; 0, Integer::sum));
+}</pre>
+        <pre>$ java Main.java
+[3, 10, 21, 36, 55]
+[3, 6]</pre>
+        <p>1行目は、窓<code>[1, 2] … [9, 10]</code>の合計<code>3, 7, 11, 15, 19</code>の累積和です。2行目は窓<code>[1, 2]</code>と端数の<code>[3]</code>の合計<code>3, 3</code>の累積和になります。</p>
+        <p><code>a.andThen(b)</code>は「aの出力をbの入力にする」Gathererを作ります。<code>.gather(a).gather(b)</code>と同じ結果ですが、合成したGathererを名前付きの部品として再利用できます。<code>windowFixed</code>には型引数<code>&lt;Integer&gt;</code>を明示し、後続のラムダの型推論を助けています。</p>
+        <p>インスタンス<code>main</code>を含むファイルは、<code>java Main.java</code>でコンパイルせずに実行できます。</p>
+        <p><strong>説明例：</strong>「Gathererは、状態を持ちながら要素を受け取り、0個以上の要素を下流へ流す、自作できる中間操作」です。</p>
+      </div></details>
+    </article>
+  </section>
+  <footer>
+    <p>参照：<a href="https://openjdk.org/jeps/485">JEP 485: Stream Gatherers</a> · <a href="https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/stream/Gatherer.html">Java SE 25 API — Gatherer</a> · <a href="https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/stream/Gatherers.html">Java SE 25 API — Gatherers</a></p>
+    <p>各回答は初期状態では閉じています。外部ライブラリや通信は不要です。HTMLファイルとworkbook.cssを同じフォルダに置き、ブラウザでHTMLファイルを開いて学習できます。</p>
+  </footer>
+</main>
+</body>
+</html>
