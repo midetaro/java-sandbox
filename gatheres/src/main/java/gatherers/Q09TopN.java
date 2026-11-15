@@ -10,7 +10,6 @@ public final class Q09TopN {
 
     /** 上位 n 件を降順で流す。 */
     public static Gatherer<Integer, ?, Integer> topN(int n) {
-        // TODO: Gatherer.of(initializer, integrator, combiner, finisher) を使う
         throw new UnsupportedOperationException("TODO: 問題09 topN");
     }
 }

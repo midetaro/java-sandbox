@@ -322,7 +322,32 @@ IntStream.rangeClosed(1, 1000).boxed().parallel().gather(topN(3)).toList();
             });
 }</pre>
         <p>4つすべてを受け取る<code>Gatherer.of(initializer, integrator, combiner, finisher)</code>を使います。並列実行では入力が分割され、分割ごとにinitializerで状態が作られます。combinerは2つの部分結果をマージし、再びn件に絞ります。integratorでは要素を流さないので、下流の引数は<code>_</code>にします。</p>
-        <p>状態は最小ヒープの<code>PriorityQueue</code>です。先頭が最小なので、n件を超えたら<code>poll</code>で最小を捨てます。ヒープの反復順は整列されていないため、finisherで降順に並べてから流します。</p>
+        <p><strong>PriorityQueueとは：</strong><code>java.util.PriorityQueue</code>は、入れた順ではなく<strong>優先度の順</strong>に取り出せるキューです。内部はヒープという木構造で、Comparatorを指定しなければ要素の自然順序で「最小の要素」が常に先頭に来ます（最小ヒープ）。主な操作は次のとおりです。</p>
+        <ul>
+          <li><code>offer(e)</code>：要素を追加します。O(log n)。</li>
+          <li><code>peek()</code>：先頭（最小）を取り出さずに見ます。O(1)。</li>
+          <li><code>poll()</code>：先頭（最小）を取り出して削除します。O(log n)。</li>
+          <li><code>size()</code>：要素数を返します。</li>
+        </ul>
+        <p>ヒープが保証するのは「先頭が最小」ということだけで、それ以外の要素の並びは整列されていません。そのため<code>for</code>文や<code>new ArrayList&lt;&gt;(heap)</code>で取り出した順序はバラバラです。降順に流すには、finisherで並べ替えます。</p>
+        <p><strong>上位n件なのに最小ヒープを使う理由：</strong>上位n件を残すには、n件を超えたときに「残っている中で一番小さいもの」を捨てる必要があります。最小ヒープなら捨てる対象が常に先頭にあるので、<code>poll()</code>ですぐ捨てられます。状態はn件（一時的にn+1件）しか持たないため、全要素をためてソートするよりメモリを使いません。</p>
+        <p>入力<code>5, 1, 8, 3, 9</code>、n = 3で追うと次のようになります（ヒープの中身は見やすいよう昇順で書いています）。</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>届いた要素</th><th>offer後</th><th>size &gt; 3？</th><th>poll後</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>5</td><td>[5]</td><td>いいえ</td><td>[5]</td></tr>
+              <tr><td>1</td><td>[1, 5]</td><td>いいえ</td><td>[1, 5]</td></tr>
+              <tr><td>8</td><td>[1, 5, 8]</td><td>いいえ</td><td>[1, 5, 8]</td></tr>
+              <tr><td>3</td><td>[1, 3, 5, 8]</td><td>はい → 最小の1を捨てる</td><td>[3, 5, 8]</td></tr>
+              <tr><td>9</td><td>[3, 5, 8, 9]</td><td>はい → 最小の3を捨てる</td><td>[5, 8, 9]</td></tr>
+              <tr><td>（終わり）</td><td colspan="3">finisherで降順に並べて 9, 8, 5 を流す</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>combinerでも同じ考え方で、<code>right</code>の要素を<code>left</code>に1つずつ<code>offer</code>し、n件を超えたら<code>poll</code>で最小を捨てます。</p>
         <p><code>ofSequential</code>で作ったGathererなどcombinerを持たないものは、<code>parallel()</code>のStreamでも<code>gather</code>の段階が逐次に評価されます。結果は正しいままですが、並列化の効果は得られません。</p>
       </div></details>
     </article>
