@@ -1,5 +1,6 @@
 package gatherers;
 
+import java.util.HashSet;
 import java.util.function.Function;
 import java.util.stream.Gatherer;
 
@@ -10,7 +11,13 @@ import java.util.stream.Gatherer;
 public final class Q06DistinctBy {
 
     public static <T, K> Gatherer<T, ?, T> distinctBy(Function<? super T, ? extends K> keyExtractor) {
-        // TODO: Gatherer.ofSequential(initializer, integrator) で状態を持たせる
-        throw new UnsupportedOperationException("TODO: 問題06 distinctBy");
+        return Gatherer.ofSequential(
+                HashSet<K>::new,
+                Gatherer.Integrator.ofGreedy((seen,element,downstream) ->{
+                        if(seen.add(keyExtractor.apply(element))){
+                            return downstream.push(element);
+                        }
+                        return true;}
+        ));
     }
 }
