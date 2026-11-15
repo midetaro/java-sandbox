@@ -1,6 +1,7 @@
 package gatherers;
 
 import java.util.stream.Gatherer;
+import java.util.stream.Gatherers;
 import java.util.stream.Stream;
 
 /**
@@ -12,8 +13,9 @@ public final class Q10Pipeline {
 
     /** 2個ずつの窓に分ける → 各窓の合計を取る → 累積和を出す */
     public static Gatherer<Integer, ?, Integer> pipeline() {
-        // TODO: Gatherers.windowFixed、Q04Map.map、Gatherers.scan を andThen で合成する
-        throw new UnsupportedOperationException("TODO: 問題10 pipeline");
+        return Gatherers.<Integer>windowFixed(2)
+                .andThen(Q04Map.map(window -> window.stream().mapToInt(Integer::intValue).sum()))
+                .andThen(Gatherers.scan(()-> 0, Integer::sum));
     }
 
     static void main() {
