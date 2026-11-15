@@ -9,8 +9,12 @@ import java.util.stream.Gatherer;
  */
 public final class Q04Map {
 
+    /**
+     * Gatherersの代わりにGatherer型のオブジェクトを書く
+     */
     public static <T, R> Gatherer<T, ?, R> map(Function<? super T, ? extends R> mapper) {
-        // TODO: Gatherer.of と Gatherer.Integrator.ofGreedy を使う
-        throw new UnsupportedOperationException("TODO: 問題04 map");
+        return Gatherer.of(Gatherer.Integrator.ofGreedy(
+                (_,element,downstream) -> downstream.push(mapper.apply(element))
+        ));
     }
 }
