@@ -6,7 +6,6 @@ import java.util.stream.Gatherer;
  * 問題07: 最後のまとまりが消えるバグを直す
  * 確認: ./gradlew test --tests '*Q07*'
  *
- * TODO: このままでは最後のまとまりが出力されない。原因を考えて修正する。
  */
 public final class Q07RunLength {
 
@@ -28,6 +27,11 @@ public final class Q07RunLength {
                     state.value = element;
                     state.count = 1;
                     return accepted;
+                },
+                (state,downstream) -> {
+                    if(state.count > 0){
+                        downstream.push(state.value + state.count);
+                    }
                 });
     }
 }
