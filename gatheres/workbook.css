@@ -187,6 +187,29 @@ details[open] summary {
   padding: 0 4px 6px;
 }
 
+.table-wrap {
+  overflow-x: auto;
+  margin: 12px 0;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: .92rem;
+}
+
+th, td {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  text-align: left;
+  white-space: nowrap;
+}
+
+th {
+  background: var(--intro-background);
+  color: var(--ink);
+}
+
 /* 7. モバイル表示 */
 @media (max-width: 600px) {
   header {

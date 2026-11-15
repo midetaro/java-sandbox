@@ -196,7 +196,7 @@ Stream.of("apple", "avocado", "banana", "blueberry", "cherry")
     <article class="question" id="q7">
       <div class="meta">問題 07 · finisher・最後の要素の取りこぼし</div>
       <h3>最後のまとまりが消えるバグを直す</h3>
-      <p>連続する同じ文字列を「文字列＋連続数」にまとめる（ランレングス圧縮）Gathererを書いたところ、最後のまとまりが出力されませんでした。原因と修正方法を答えてください。</p>
+      <p>連続する同じ文字列を「文字列＋連続数」にまとめる（ランレングス圧縮）Gathererを書いたところ、最後のまとまりが出力されませんでした。原因と修正方法を答えてください。また、integratorだけでは直せずfinisherが必要になる理由も説明してください。</p>
       <pre>class RunState { String value; int count; }
 
 Gatherer&lt;String, RunState, String&gt; runLength = Gatherer.ofSequential(
@@ -217,7 +217,7 @@ Stream.of("a", "a", "a", "b", "c", "c").gather(runLength).toList();
     // 期待：[a3, b1, c2]　実際：[a3, b1]</pre>
       <p class="note"><strong>コードで解く：</strong><code>src/main/java/gatherers/Q07RunLength.java</code>に問題文のコードが入っています。これを修正し、<code>./gradlew test --tests '*Q07*'</code>ですべてのテストが通ることを確認します。</p>
       <details><summary>回答・解説を開く</summary><div class="answer">
-        <p>integratorは「値が変わったとき」に前のまとまりを流します。最後の<code>c2</code>の後には次の要素が来ないため、integratorでは流すきっかけがありません。入力が尽きた後に呼ばれるfinisherで、状態に残ったまとまりを流します。</p>
+        <p>integratorは「届いた要素が、数えている最中の文字（<code>state.value</code>）と違うとき」に前のまとまりを流します。<code>state</code>は最初に1つ作られた<code>RunState</code>がずっと使い回され、フィールドが書き換わるだけです。最後の<code>c2</code>の後には次の要素が来ないため、integratorでは流すきっかけがありません。入力が尽きた後に呼ばれるfinisherで、状態に残ったまとまりを流します。</p>
         <pre>Gatherer&lt;String, RunState, String&gt; runLength = Gatherer.ofSequential(
         RunState::new,
         (state, element, downstream) -&gt; { /* 問題文と同じ */ },
@@ -227,6 +227,31 @@ Stream.of("a", "a", "a", "b", "c", "c").gather(runLength).toList();
             }
         });
     // =&gt; [a3, b1, c2]</pre>
+        <p><strong>finisherが必要になる理由：</strong>integratorのif文は2つの分岐に分かれ、pushは片方でしか起きません。</p>
+        <ul>
+          <li><strong>① 届いた文字が数えている文字と同じ</strong>：<code>count</code>を1増やすだけで、pushしません。</li>
+          <li><strong>② 届いた文字が違う（または最初の1個目）</strong>：それまでのまとまりをpushし、新しい文字を数え始めます。</li>
+        </ul>
+        <p>入力<code>a a a b c c</code>で、どちらの分岐を通るかを追います。</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>届いた要素</th><th>呼ばれる前のstate</th><th>通る分岐</th><th>push</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>a</td><td>(なし, 0)</td><td>②（最初の1個目）</td><td>なし（count==0なので）</td></tr>
+              <tr><td>a</td><td>(a, 1)</td><td>① 同じ</td><td>なし</td></tr>
+              <tr><td>a</td><td>(a, 2)</td><td>① 同じ</td><td>なし</td></tr>
+              <tr><td>b</td><td>(a, 3)</td><td>② 違う</td><td><strong>"a3"</strong></td></tr>
+              <tr><td>c</td><td>(b, 1)</td><td>② 違う</td><td><strong>"b1"</strong></td></tr>
+              <tr><td>c</td><td>(c, 1)</td><td>① 同じ</td><td>なし</td></tr>
+              <tr><td>（終わり）</td><td>(c, 2)</td><td>integratorは呼ばれない</td><td><strong>なし ← ここが問題</strong></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p><code>"c2"</code>をpushするには②を通る必要があり、そのためには「cとは違う文字」が届かなければなりません。しかし入力はもう終わっていて、integratorは要素が届かないと呼ばれないため、<code>(c, 2)</code>はstateに残ったままになります。</p>
+        <p>このGathererは、あるまとまりを「次の違う文字が来たとき」に初めて流します。届いた時点では、その連続がまだ続くのか分からないからです。たとえば5回目の<code>"c"</code>の時点で<code>"c1"</code>を流すと、次にもう1つ<code>"c"</code>が来て間違いになります。</p>
+        <p>最後のまとまり<code>c × 2</code>には「次の違う文字」が永遠に来ません。integratorは要素が届いたときにしか呼ばれないので、要素が来なければ流す機会もありません。そこで「入力はもう終わった」というタイミングで1回だけ呼ばれるfinisherが必要になります。finisherの中なら「もう続きは来ない」と確定しているので、状態に残った<code>c × 2</code>を安心して流せます。</p>
         <p><code>state.count &gt; 0</code>の確認により、空のStreamでは何も流しません。この確認がないと<code>null0</code>のような値を流してしまいます。</p>
         <p>窓分割や<code>fold</code>のように「ためてから流す」Gathererには、finisherが必要になることが多いです。<code>windowFixed</code>が端数の窓を最後に流せるのも同じ仕組みです。</p>
       </div></details>
