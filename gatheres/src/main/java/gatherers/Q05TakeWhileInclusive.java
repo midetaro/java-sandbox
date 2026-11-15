@@ -10,7 +10,9 @@ import java.util.stream.Gatherer;
 public final class Q05TakeWhileInclusive {
 
     public static <T> Gatherer<T, ?, T> takeWhileInclusive(Predicate<? super T> predicate) {
-        // TODO: integrator が false を返すと処理が打ち切られる
-        throw new UnsupportedOperationException("TODO: 問題05 takeWhileInclusive");
+        return Gatherer.of((
+                (_,element,downstream) ->
+                    downstream.push(element) && predicate.test(element)
+        ));
     }
 }
