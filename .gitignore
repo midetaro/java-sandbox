@@ -3,6 +3,7 @@
 .idea/
 .gradle/
 gradle/
+build/
 .bat
 .jar/
 # 一度commitしたファイルをgit管理から外す方法
